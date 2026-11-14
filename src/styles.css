@@ -1,0 +1,75 @@
+@import "tailwindcss";
+@import "@fontsource/vazirmatn/arabic-400.css";
+@import "@fontsource/vazirmatn/arabic-500.css";
+@import "@fontsource/vazirmatn/arabic-700.css";
+@import "@fontsource/vazirmatn/arabic-800.css";
+@import "@fontsource/vazirmatn/latin-400.css";
+@import "@fontsource/vazirmatn/latin-700.css";
+
+@theme {
+  --color-bg: #f3eee6;
+  --color-surface: #fffcf7;
+  --color-ink: #1c1814;
+  --color-muted: #6e655b;
+  --color-line: #e4d9cb;
+  --color-primary: #b8432f;
+  --color-primary-soft: #f6e4dc;
+  --color-on-primary: #fff8f4;
+  --font-sans: "Vazirmatn", "Segoe UI", tahoma, sans-serif;
+  --radius-card: 1.25rem;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    text-wrap: pretty;
+    background: var(--color-bg);
+    color: var(--color-ink);
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input,
+  button {
+    font-family: inherit;
+  }
+
+  ::selection {
+    background: var(--color-primary-soft);
+    color: var(--color-ink);
+  }
+}
+
+@layer components {
+  .pb-nav {
+    padding-bottom: calc(5.75rem + env(safe-area-inset-bottom));
+  }
+
+  .nav-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

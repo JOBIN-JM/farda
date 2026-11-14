@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "فردا",
+      "hasCanvas": false,
+      "bodyTextLen": 656,
+      "bodyTextHash": "ea81a8c9d3a65f59647a323e68722f952018506bebc09b64563738ed0bae2755",
+      "bodyTextPrefix": "برنامه‌ریز تورم فردا قیمت‌ها: ۲۳ آبان ۱۴۰۵ کنارگذاشت ۱۴۰۵ آبان ۷",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "فردا",
+      "hasCanvas": false,
+      "bodyTextLen": 656,
+      "bodyTextHash": "ea81a8c9d3a65f59647a323e68722f952018506bebc09b64563738ed0bae2755",
+      "bodyTextPrefix": "برنامه‌ریز تورم فردا قیمت‌ها: ۲۳ آبان ۱۴۰۵ کنارگذاشت ۱۴۰۵ آبان ۷",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
