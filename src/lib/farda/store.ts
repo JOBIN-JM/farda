@@ -1,7 +1,23 @@
+import { useMemo, useState } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { CATALOG } from "./catalog";
+import {
+  CATALOG,
+  MAX_ITEM_PRICE,
+  PORTIONS_PER_UNIT,
+  PRICE_AS_OF,
+  basketTotal,
+  defaultPriceOf,
+  type PriceOverrides,
+} from "./catalog";
+import { isDayKey, monthDaysOfKey, monthKeyOf, todayKey, type DayKey } from "./calendar";
+import { formatFeedDate } from "./format";
+import { cleanExpense, cleanExpenses, monthPool, type Expense } from "./budget";
+import type { MonthRecord } from "./history";
 import { monthlySetAside, snapMonths } from "./money";
+import { cleanPriceMap, isNewerFeed, restoreFeed, type PriceFeed } from "./price-feed";
+import { DEFAULT_REMINDER, cleanDayList, cleanReminder, type ReminderSettings } from "./reminder";
+import { cleanSchedule, monthlyQty, type Schedule } from "./schedule";
 
 export type Goal = {
   id: string;
@@ -14,9 +30,24 @@ export type Goal = {
   checkInKey: string | null;
 };
 
+const MAX_HISTORY_MONTHS = 24;
+
 type Persisted = {
   budget: number;
   qty: Record<string, number>;
+  /** Items with a repeat schedule use it instead of their fixed `qty` (which is kept for switching back). */
+  schedules: Record<string, Schedule>;
+  priceOverrides: PriceOverrides;
+  /** Latest downloaded price feed (null until one has been fetched). */
+  feed: PriceFeed | null;
+  history: Record<string, MonthRecord>;
+  /** Spending outside the basket, by day. */
+  expenses: Expense[];
+  reminder: ReminderSettings;
+  /** Days the user confirmed (logged everything, or had nothing to log). */
+  reviewedDays: DayKey[];
+  /** First day the app was used; the reminder never asks about earlier days. */
+  trackingSince: DayKey | null;
   householdInflation: number;
   goals: Goal[];
   activeGoalId: string;
@@ -48,11 +79,41 @@ function defaultQty(): Record<string, number> {
   return qty;
 }
 
+function sanitizeSchedules(raw: unknown): Record<string, Schedule> {
+  const clean: Record<string, Schedule> = {};
+  if (!raw || typeof raw !== "object") return clean;
+  for (const item of CATALOG) {
+    const schedule = cleanSchedule((raw as Record<string, unknown>)[item.id]);
+    if (schedule) clean[item.id] = schedule;
+  }
+  return clean;
+}
+
+function sanitizeHistory(raw: unknown): Record<string, MonthRecord> {
+  const clean: Record<string, MonthRecord> = {};
+  if (!raw || typeof raw !== "object") return clean;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^\d{4}-\d{2}$/.test(key) || !value || typeof value !== "object") continue;
+    const { basket, saved } = value as Partial<MonthRecord>;
+    if (typeof basket !== "number" || !Number.isFinite(basket)) continue;
+    clean[key] = { basket, saved: typeof saved === "number" && Number.isFinite(saved) ? saved : 0 };
+  }
+  return clean;
+}
+
 function freshPersisted(): Persisted {
   const goal = defaultGoal();
   return {
     budget: 30_000_000,
     qty: defaultQty(),
+    schedules: {},
+    priceOverrides: {},
+    feed: null,
+    history: {},
+    expenses: [],
+    reminder: DEFAULT_REMINDER,
+    reviewedDays: [],
+    trackingSince: null,
     householdInflation: 71.4,
     goals: [goal],
     activeGoalId: goal.id,
@@ -62,6 +123,22 @@ function freshPersisted(): Persisted {
 type Plan = Persisted & {
   setBudget: (n: number) => void;
   setQty: (id: string, n: number) => void;
+  /** Override an item's price. Setting it back to the catalog default clears the override. */
+  /** Give an item a repeat schedule, or pass null to go back to its fixed quantity. */
+  setSchedule: (id: string, schedule: Schedule | null) => void;
+  setPrice: (id: string, n: number) => void;
+  resetPrice: (id: string) => void;
+  /** Adopt a downloaded feed if it is newer than the one we have. */
+  applyFeed: (feed: PriceFeed) => void;
+  /** Snapshot this month's basket and confirmed savings into the history. */
+  recordMonth: (monthKey: string) => void;
+  addExpense: (input: { day: string; amount: number; note?: string }) => void;
+  removeExpense: (id: string) => void;
+  /** Change reminder settings. Changing the time or switching it on/off clears any snooze. */
+  setReminder: (patch: Partial<Pick<ReminderSettings, "enabled" | "time">>) => void;
+  snoozeReminder: (until: string | null) => void;
+  markReviewed: (day: DayKey) => void;
+  startTracking: (day: DayKey) => void;
   setHouseholdInflation: (n: number) => void;
   patchGoal: (id: string, patch: Partial<Omit<Goal, "id" | "saved" | "checkInKey">>) => void;
   addGoal: (draft: Pick<Goal, "name" | "price" | "annualInflation">) => void;
@@ -87,6 +164,73 @@ export const usePlan = create<Plan>()(
         set({
           qty: { ...get().qty, [id]: Math.max(0, Math.min(99, Math.round(n))) },
         }),
+      setSchedule: (id, schedule) => {
+        if (!CATALOG.some((item) => item.id === id)) return;
+        const { [id]: _previous, ...rest } = get().schedules;
+        if (schedule === null) return set({ schedules: rest });
+        const clean = cleanSchedule(schedule);
+        if (clean) set({ schedules: { ...rest, [id]: clean } });
+      },
+      setPrice: (id, n) => {
+        const item = CATALOG.find((entry) => entry.id === id);
+        if (!item) return;
+        const price = Math.min(MAX_ITEM_PRICE, Math.round(n));
+        if (!Number.isFinite(price) || price <= 0) return;
+        const { [id]: _previous, ...rest } = get().priceOverrides;
+        const isDefault = price === defaultPriceOf(item, get().feed?.prices);
+        set({ priceOverrides: isDefault ? rest : { ...rest, [id]: price } });
+      },
+      resetPrice: (id) => {
+        if (!(id in get().priceOverrides)) return;
+        const { [id]: _removed, ...rest } = get().priceOverrides;
+        set({ priceOverrides: rest });
+      },
+      applyFeed: (feed) => {
+        if (!isNewerFeed(feed, get().feed)) return;
+        // An edit that now matches the new default is redundant; every other edit stays.
+        const priceOverrides = { ...get().priceOverrides };
+        for (const item of CATALOG) {
+          if (priceOverrides[item.id] === defaultPriceOf(item, feed.prices)) delete priceOverrides[item.id];
+        }
+        set({ feed, priceOverrides });
+      },
+      addExpense: ({ day, amount, note }) => {
+        const expense = cleanExpense({
+          id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          day,
+          amount: Math.round(amount),
+          note,
+        });
+        if (expense) set({ expenses: cleanExpenses([...get().expenses, expense]) });
+      },
+      removeExpense: (id) => set({ expenses: get().expenses.filter((expense) => expense.id !== id) }),
+      setReminder: (patch) =>
+        set({ reminder: cleanReminder({ ...get().reminder, ...patch, snoozedUntil: null }) }),
+      snoozeReminder: (until) => set({ reminder: cleanReminder({ ...get().reminder, snoozedUntil: until }) }),
+      markReviewed: (day) => {
+        if (isDayKey(day)) set({ reviewedDays: cleanDayList([...get().reviewedDays, day]) });
+      },
+      startTracking: (day) => {
+        if (get().trackingSince === null && isDayKey(day)) set({ trackingSince: day });
+      },
+      recordMonth: (monthKey) => {
+        const state = get();
+        const monthly = monthlyQty(state.qty, state.schedules, monthDaysOfKey(monthKey), PORTIONS_PER_UNIT);
+        const basket = basketTotal(monthly, state.priceOverrides, state.feed?.prices);
+        const saved = state.goals.reduce(
+          (sum, goal) =>
+            goal.checkInKey === monthKey
+              ? sum + monthlySetAside(goal.price, goal.annualInflation, goal.months, goal.depositAnnual)
+              : sum,
+          0,
+        );
+        const current = state.history[monthKey];
+        if (current && current.basket === basket && current.saved === saved) return;
+        const history = { ...state.history, [monthKey]: { basket, saved } };
+        const keys = Object.keys(history).sort();
+        for (const old of keys.slice(0, Math.max(0, keys.length - MAX_HISTORY_MONTHS))) delete history[old];
+        set({ history });
+      },
       setHouseholdInflation: (n) => set({ householdInflation: clampRate(n) }),
       patchGoal: (id, patch) =>
         set({
@@ -148,7 +292,8 @@ export const usePlan = create<Plan>()(
           ),
         });
       },
-      reset: () => set(freshPersisted()),
+      // The feed is shared data, not the user's plan, so a reset keeps it.
+      reset: () => set({ ...freshPersisted(), feed: get().feed }),
     }),
     {
       name: "farda-plan-v1",
@@ -157,6 +302,14 @@ export const usePlan = create<Plan>()(
       partialize: (state) => ({
         budget: state.budget,
         qty: state.qty,
+        schedules: state.schedules,
+        priceOverrides: state.priceOverrides,
+        feed: state.feed,
+        history: state.history,
+        expenses: state.expenses,
+        reminder: state.reminder,
+        reviewedDays: state.reviewedDays,
+        trackingSince: state.trackingSince,
         householdInflation: state.householdInflation,
         goals: state.goals,
         activeGoalId: state.activeGoalId,
@@ -179,6 +332,14 @@ export const usePlan = create<Plan>()(
           ...current,
           budget: typeof saved.budget === "number" ? saved.budget : current.budget,
           qty: saved.qty ?? current.qty,
+          schedules: sanitizeSchedules(saved.schedules),
+          priceOverrides: cleanPriceMap(saved.priceOverrides),
+          feed: restoreFeed(saved.feed),
+          history: sanitizeHistory(saved.history),
+          expenses: cleanExpenses(saved.expenses),
+          reminder: cleanReminder(saved.reminder),
+          reviewedDays: cleanDayList(saved.reviewedDays),
+          trackingSince: isDayKey(saved.trackingSince) ? saved.trackingSince : null,
           householdInflation:
             typeof saved.householdInflation === "number" ? saved.householdInflation : current.householdInflation,
           goals,
@@ -188,3 +349,44 @@ export const usePlan = create<Plan>()(
     },
   ),
 );
+
+/** The date shown next to prices: the feed's date once one is loaded, else the catalog's. */
+export function usePriceDate(): string {
+  const asOf = usePlan((s) => s.feed?.asOf);
+  return asOf ? formatFeedDate(asOf) : PRICE_AS_OF;
+}
+
+/** Days of the current Persian month. */
+export function useMonthDays(): DayKey[] {
+  // Scheduled items are empty on the first render, so server and client markup agree.
+  const [monthKey] = useState(() => monthKeyOf(todayKey()));
+  return useMemo(() => monthDaysOfKey(monthKey), [monthKey]);
+}
+
+/**
+ * Quantity per item for the current Persian month, in purchase units: fixed
+ * items keep their quantity, scheduled items count how often they occur.
+ */
+export function useMonthlyQty(): Record<string, number> {
+  const qty = usePlan((s) => s.qty);
+  const schedules = usePlan((s) => s.schedules);
+  const days = useMonthDays();
+  return useMemo(() => monthlyQty(qty, schedules, days, PORTIONS_PER_UNIT), [qty, schedules, days]);
+}
+
+/**
+ * This month's free pool: budget − basket − the active goal's monthly savings.
+ * It is the same "می‌ماند" number the home screen shows.
+ */
+export function useMonthPool() {
+  const budget = usePlan((s) => s.budget);
+  const goals = usePlan((s) => s.goals);
+  const activeGoalId = usePlan((s) => s.activeGoalId);
+  const priceOverrides = usePlan((s) => s.priceOverrides);
+  const feedPrices = usePlan((s) => s.feed?.prices);
+  const monthly = useMonthlyQty();
+  const basket = basketTotal(monthly, priceOverrides, feedPrices);
+  const goal = goals.find((item) => item.id === activeGoalId) ?? goals[0];
+  const save = goal ? monthlySetAside(goal.price, goal.annualInflation, goal.months, goal.depositAnnual) : 0;
+  return { budget, basket, save, left: monthPool(budget, basket, save) };
+}
