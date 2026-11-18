@@ -268,7 +268,9 @@ export function GoalView() {
 
       <button
         type="button"
-        className="min-h-11 text-sm font-bold text-primary"
+        className={`min-h-11 text-sm font-bold ${
+          confirmDelete ? "rounded-xl bg-danger px-4 text-on-danger" : "text-danger"
+        }`}
         onClick={() => {
           if (!confirmDelete) {
             setConfirmDelete(true);

@@ -12,9 +12,13 @@
   --color-ink: #1c1814;
   --color-muted: #6e655b;
   --color-line: #e4d9cb;
-  --color-primary: #b8432f;
-  --color-primary-soft: #f6e4dc;
-  --color-on-primary: #fff8f4;
+  /* Brand: deep teal. Red is reserved for danger (delete, reset, serious warnings). */
+  --color-primary: #0f6b6e;
+  --color-primary-soft: #d9ece9;
+  --color-on-primary: #f4fbf9;
+  --color-danger: #b8432f;
+  --color-danger-soft: #f6e4dc;
+  --color-on-danger: #fff8f4;
   --font-sans: "Vazirmatn", "Segoe UI", tahoma, sans-serif;
   --radius-card: 1.25rem;
 }

@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { basketTotal } from "@/lib/farda/catalog";
 import { formatCompact, formatPercent, formatToman, persianMonthKey, persianMonthLabel } from "@/lib/farda/format";
 import { futurePrice, savingsPlan } from "@/lib/farda/money";
-import { usePlan } from "@/lib/farda/store";
+import { useMonthPool, usePlan } from "@/lib/farda/store";
+import type { DayKey } from "@/lib/farda/calendar";
+import { todayKey } from "@/lib/farda/calendar";
+import { ReminderSettings } from "./reminder-settings";
+import { TodayCard } from "./today-card";
 import { Card, MoneyField } from "./ui";
 
-export function HomeView({ onOpenGoal }: { onOpenGoal: () => void }) {
-  const budget = usePlan((s) => s.budget);
-  const qty = usePlan((s) => s.qty);
+export function HomeView({ onOpenGoal, onOpenCalendar }: { onOpenGoal: () => void; onOpenCalendar: () => void }) {
+  const { budget, basket, save, left } = useMonthPool();
   const setBudget = usePlan((s) => s.setBudget);
   const goals = usePlan((s) => s.goals);
   const activeGoalId = usePlan((s) => s.activeGoalId);
@@ -17,17 +19,17 @@ export function HomeView({ onOpenGoal }: { onOpenGoal: () => void }) {
 
   const [monthKey, setMonthKey] = useState<string | null>(null);
   const [monthLabel, setMonthLabel] = useState<string | null>(null);
+  // Read the clock after mount: the server's date can differ from the device's.
+  const [today, setToday] = useState<DayKey | null>(null);
   useEffect(() => {
+    setToday(todayKey());
     setMonthKey(persianMonthKey());
     setMonthLabel(persianMonthLabel());
   }, []);
 
   const goal = goals.find((item) => item.id === activeGoalId) ?? goals[0];
-  const basket = basketTotal(qty);
   const plan = goal ? savingsPlan(goal.price, goal.annualInflation, goal.months, goal.depositAnnual) : null;
-  const save = plan?.monthly ?? 0;
   const committed = basket + save;
-  const left = budget - committed;
   const over = left < 0;
   const futureBasket = futurePrice(basket, householdInflation, 12);
   const basketShare = budget > 0 ? (basket / budget) * 100 : 0;
@@ -92,10 +94,12 @@ export function HomeView({ onOpenGoal }: { onOpenGoal: () => void }) {
         </Card>
       )}
 
+      {today ? <TodayCard today={today} onOpenCalendar={onOpenCalendar} /> : null}
+
       <Card>
         <div className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="text-base font-bold">بودجه این ماه</h2>
-          <p className={`text-sm font-bold tabular-nums ${over ? "text-primary" : "text-ink"}`}>
+          <p className={`text-sm font-bold tabular-nums ${over ? "text-danger" : "text-ink"}`}>
             {over ? `${formatCompact(Math.abs(left))} جلو افتادی` : `${formatCompact(left)} می‌ماند`}
           </p>
         </div>
@@ -147,6 +151,8 @@ export function HomeView({ onOpenGoal }: { onOpenGoal: () => void }) {
           {" "}است. این را هم باید جایی در بودجه جا بدهی.
         </p>
       </Card>
+
+      <ReminderSettings />
     </div>
   );
 }
