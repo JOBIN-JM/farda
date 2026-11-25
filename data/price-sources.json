@@ -1,22 +1,73 @@
 {
-  "_readme": "برای هر قلم یک تا سه کالای مرجع از دیجی‌کالا بگذار. packQty = هر بسته چند «واحد خرید» آن قلم است (مثلاً مرغ ۱.۸ کیلویی برای قلم کیلویی: 1.8). کلیدهای شروع‌شده با _ نادیده گرفته می‌شوند. قلمی که لینک ندارد همان قیمت قبلی را نگه می‌دارد.",
+  "_readme": "هر قلم یک تا سه کالای مرجع دارد؛ لینک می‌تواند از digikala.com (فقط لینک dkp-شماره)، marketban.com یا torob.com باشد و سایت از آدرس تشخیص داده می‌شود. packQty = هر بسته چند «واحد خرید» آن قلم است (مثلاً مرغ ۱.۸ کیلویی برای قلم کیلویی: 1.8؛ شیر ۹۴۶ میلی‌لیتری برای قلم لیتری: 0.946). واحد پول: اگر خود صفحه کد ارز بدهد (IRR = ریال، IRT یا TOMAN = تومان) همان استفاده می‌شود؛ وگرنه unit همان لینک ({\"unit\": \"rial\"} یا \"toman\")، وگرنه unit سراسری همین فایل. دیجی‌کالا کد ارز نمی‌دهد و API آن ریال است؛ اگر لینک دیجی‌کالا اضافه کردی «unit»: «rial» را روی همان لینک بگذار، چون unit سراسری اینجا toman است. قیمت ترب «ارزان‌ترین فروشنده» است (تجمیعی)؛ اگر صفحه فهرست پیشنهادها داشته باشد میانهٔ آن‌ها گرفته می‌شود. هشدار: هیچ‌کدام از لینک‌های مارکت‌بان و ترب اینجا واقعاً باز و تأیید نشده‌اند. اولین بار حتماً npm run prices:check را اجرا کن و قیمت خروجی هر لینک را با خود سایت مقایسه کن (واحد، حجم بسته و نوع کالا). اگر قیمتی پیدا نشد: npm run prices:check -- --debug-dump و فایل‌های data/.debug/ را برای اصلاح استخراج‌گر بفرست. اقلام بدون لینک همان قیمت قبلی را نگه می‌دارند. کلیدهای شروع‌شده با _ نادیده گرفته می‌شوند.",
   "_example": {
-    "url": "https://www.digikala.com/product/dkp-XXXXXXX/",
-    "packQty": 1
+    "url": "https://www.marketban.com/product/mkb-XXXXXXX/",
+    "packQty": 1,
+    "unit": "toman"
   },
-  "unit": "rial",
+  "unit": "toman",
   "items": {
-    "milk": [],
-    "yogurt": [],
-    "cheese": [],
-    "butter": [],
+    "milk": [
+      {
+        "url": "https://www.marketban.com/product/mkb-5205932/%D8%B4%DB%8C%D8%B1-%DA%A9%D9%85-%DA%86%D8%B1%D8%A8-%D9%BE%DA%AF%D8%A7%D9%87-946-%D9%85%DB%8C%D9%84%DB%8C-%D9%84%DB%8C%D8%AA%D8%B1",
+        "packQty": 0.946
+      },
+      {
+        "url": "https://www.marketban.com/product/mkb-1485891/%D8%B4%DB%8C%D8%B1-%D9%BE%D8%B1%DA%86%D8%B1%D8%A8-%D9%81%D8%B1%D8%A7%D8%AF%D9%85%D8%A7-%DA%A9%D8%A7%D9%84%D9%87-1-%D9%84%DB%8C%D8%AA%D8%B1",
+        "packQty": 1
+      }
+    ],
+    "yogurt": [
+      {
+        "url": "https://www.marketban.com/product/mkb-1022425/%D9%85%D8%A7%D8%B3%D8%AA-%D9%BE%D8%B1%DA%86%D8%B1%D8%A8-%D9%BE%DA%AF%D8%A7%D9%87-%D9%85%D9%82%D8%AF%D8%A7%D8%B1-1000-%DA%AF%D8%B1%D9%85",
+        "packQty": 1
+      },
+      {
+        "url": "https://www.marketban.com/product/mkb-8000063127738/%D9%85%D8%A7%D8%B3%D8%AA-%D8%B3%D8%AA-%D9%BE%D8%B1-%DA%86%D8%B1%D8%A8-900%DA%AF%D8%B1%D9%85%DB%8C-%DA%A9%D8%A7%D9%84%D9%87",
+        "packQty": 0.9
+      }
+    ],
+    "cheese": [
+      {
+        "url": "https://www.marketban.com/product/mkb-9116433/%D9%BE%D9%86%DB%8C%D8%B1-%D8%B3%D9%81%DB%8C%D8%AF-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86%DB%8C-%D9%BE%DA%AF%D8%A7%D9%87-400-%DA%AF%D8%B1%D9%85",
+        "packQty": 1
+      },
+      {
+        "url": "https://www.marketban.com/product/mkb-1055435/%D9%BE%D9%86%DB%8C%D8%B1-%D8%B3%D9%81%DB%8C%D8%AF-%D8%AA%D8%A7%D8%B2%D9%87-%D8%AA%DB%8C-%D9%81%D8%AA%D8%A7-%DA%A9%D8%A7%D9%84%D9%87-400-%DA%AF%D8%B1%D9%85",
+        "packQty": 1
+      }
+    ],
+    "butter": [
+      {
+        "url": "https://www.marketban.com/product/mkb-1755944/%DA%A9%D8%B1%D9%87-%D9%BE%D8%A7%D8%B3%D8%AA%D9%88%D8%B1%DB%8C%D8%B2%D9%87-%DA%A9%D8%A7%D9%84%D9%87-50-%DA%AF%D8%B1%D9%85",
+        "packQty": 1
+      }
+    ],
     "eggs": [],
     "chicken": [],
     "lamb": [],
     "beef": [],
     "rice-ir": [],
     "rice-for": [],
-    "oil": [],
-    "tea": []
+    "oil": [
+      {
+        "url": "https://www.marketban.com/product/mkb-1717563/%D8%B1%D9%88%D8%BA%D9%86-%D8%B3%D8%B1%D8%AE-%DA%A9%D8%B1%D8%AF%D9%86%DB%8C-%D8%A7%D9%88%DB%8C%D9%84%D8%A7-810-%DA%AF%D8%B1%D9%85",
+        "packQty": 1
+      },
+      {
+        "url": "https://torob.com/p/54977909-79da-4d99-ba18-45c9cdc00778/%D8%B1%D9%88%D8%BA%D9%86-%D8%A7%D9%81%D8%AA%D8%A7%D8%A8%DA%AF%D8%B1%D8%AF%D8%A7%D9%86-%D9%84%D8%A7%D8%AF%D9%86-%D8%AD%D8%AC%D9%85-900-%D9%85%DB%8C%D9%84%DB%8C-%D9%84%DB%8C%D8%AA%D8%B1/",
+        "packQty": 1
+      }
+    ],
+    "tea": [
+      {
+        "url": "https://torob.com/p/e484e100-6018-4b8c-8fbf-8bf3c5b4a5f6/%DA%86%D8%A7%DB%8C-%D8%A7%D8%AD%D9%85%D8%AF-%D9%85%D8%AF%D9%84-%D8%A7%D8%B1%D9%84-%DA%AF%D8%B1%DB%8C-%D9%88%D8%B2%D9%86-450-%DA%AF%D8%B1%D9%85-%D9%82%D9%88%D8%B7%DB%8C-%D9%81%D9%84%D8%B2%DB%8C/",
+        "packQty": 1
+      },
+      {
+        "url": "https://torob.com/p/77b9fa6f-f9d5-495a-a8fd-01bcb1ecd880/%DA%86%D8%A7%DB%8C-%D9%85%D9%85%D8%AA%D8%A7%D8%B2-%D9%87%D9%86%D8%AF%D9%88%D8%B3%D8%AA%D8%A7%D9%86-%DA%AF%D9%84%D8%B3%D8%AA%D8%A7%D9%86-500-%DA%AF%D8%B1%D9%85/",
+        "packQty": 1.11
+      }
+    ]
   }
 }
