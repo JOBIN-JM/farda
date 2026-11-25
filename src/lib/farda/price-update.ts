@@ -274,11 +274,17 @@ function collectOffers(offers: unknown, acc: { prices: number[]; currency: strin
   if (price !== null) acc.prices.push(price);
 }
 
-function fromJsonLd(html: string): PageReading | null {
+/** Every JSON-LD block of the page that parses as JSON. */
+function* ldValues(html: string): Generator<unknown> {
   const re = /<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script>/gi;
   for (const match of html.matchAll(re)) {
     const { value } = parseJsonText(match[1].trim());
-    if (value === null) continue;
+    if (value !== null) yield value;
+  }
+}
+
+function fromJsonLd(html: string): PageReading | null {
+  for (const value of ldValues(html)) {
     for (const node of ldNodes(value)) {
       if (!typeIsProduct(node["@type"])) continue;
       const acc = { prices: [] as number[], currency: null as string | null };
@@ -289,6 +295,41 @@ function fromJsonLd(html: string): PageReading | null {
     }
   }
   return null;
+}
+
+/** The individual offers of an `offers` value (an AggregateOffer that lists its offers counts as those offers). */
+function leafOffers(offers: unknown, out: Record<string, unknown>[]): void {
+  if (Array.isArray(offers)) {
+    for (const o of offers) leafOffers(o, out);
+    return;
+  }
+  if (!isObject(offers)) return;
+  if (Array.isArray(offers.offers) && offers.offers.length > 0) leafOffers(offers.offers, out);
+  else out.push(offers);
+}
+
+const isZeroAmount = (v: unknown): boolean =>
+  typeof v === "number" ? v === 0 : typeof v === "string" && /^0+(\.0+)?$/.test(normalizeDigits(v));
+
+/**
+ * True when the page lists the product but none of its offers can be bought: every offer is out of stock or has the
+ * price 0. This is how Torob writes a product that no seller has right now (the page itself says «ناموجود»).
+ */
+export function productUnavailable(html: string): boolean {
+  for (const value of ldValues(html)) {
+    for (const node of ldNodes(value)) {
+      if (!typeIsProduct(node["@type"])) continue;
+      const leaves: Record<string, unknown>[] = [];
+      leafOffers(node.offers, leaves);
+      if (leaves.length === 0) continue;
+      const dead = leaves.every((o) => {
+        const availability = asString(o.availability);
+        return (availability !== null && OUT_OF_STOCK.test(availability)) || isZeroAmount(o.price ?? o.lowPrice);
+      });
+      if (dead) return true;
+    }
+  }
+  return false;
 }
 
 /* (b) embedded JSON (__NEXT_DATA__) */
@@ -426,6 +467,16 @@ export function priceFromPage(
 ): RefOutcome {
   const extracted = extractPagePrice(html);
   if (!extracted.ok) {
+    if (productUnavailable(html)) {
+      return {
+        ok: false,
+        tried: extracted.tried,
+        reason:
+          "The page lists the product, but no offer can be bought: every offer has the price 0 or is out of stock " +
+          "(Torob shows this as «ناموجود»: no seller has it right now). The item keeps its previous price; " +
+          "if it stays like this, replace the link with a product that is in stock.",
+      };
+    }
     return {
       ok: false,
       tried: extracted.tried,

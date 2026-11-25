@@ -17,6 +17,7 @@ import {
   extractPagePrice,
   priceFromDigikala,
   priceFromPage,
+  productUnavailable,
   refLabel,
   siteFromUrl,
   truncateForDump,
@@ -624,5 +625,60 @@ describe("out-of-stock offers", () => {
   it("a page where every offer is out of stock gives no JSON-LD price (the item keeps its old price)", () => {
     const html = offers([{ price: 100, availability: "https://schema.org/OutOfStock" }, { price: 110, availability: "SoldOut" }]);
     assert.equal(extractPagePrice(html).ok, false);
+  });
+});
+
+/* ---------- a real Torob page: product with no seller ---------- */
+
+describe("a product nobody sells right now (shape copied from the real Torob page for a 900 ml sunflower oil)", () => {
+  const offer = (name: string) => ({ "@type": "Offer", price: "0", priceCurrency: "IRR", name });
+  const noSeller = page(
+    ld({
+      "@context": "http://schema.org/",
+      "@type": "Product",
+      name: "روغن آفتابگردان لادن حجم ۹۰۰ میلی لیتر",
+      offers: {
+        "@type": "AggregateOffer",
+        priceCurrency: "IRR",
+        lowPrice: "0",
+        highPrice: "0",
+        offerCount: "3",
+        offers: [offer("a"), offer("b"), offer("c")],
+      },
+    }) +
+      ld({ "@type": "BreadcrumbList", itemListElement: [{ "@type": "ListItem", position: 1, name: "هایپر مارکت" }] }) +
+      `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+        props: { pageProps: { product: { price: 0, price_text: "ناموجود", min_price: 0, max_price: 0 } } },
+      })}</script>`,
+  );
+
+  it("gives no price, and says the product is unavailable instead of blaming JavaScript", () => {
+    assert.equal(extractPagePrice(noSeller).ok, false);
+    assert.equal(productUnavailable(noSeller), true);
+    const r = priceFromPage(noSeller, { site: "torob", packQty: 1 }, "toman");
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.match(r.reason, /no offer can be bought/);
+      assert.match(r.reason, /replace the link/);
+      assert.doesNotMatch(r.reason, /JavaScript/);
+    }
+  });
+
+  it("is not reported for pages that simply have no data, or that have a real offer", () => {
+    assert.equal(productUnavailable("<html><body><div id=root></div></body></html>"), false);
+    assert.equal(productUnavailable(page(ld({ "@type": "Product", offers: { price: 5000 } }))), false);
+    assert.equal(productUnavailable(page(ld({ "@type": "Product", offers: [{ price: "0" }, { price: 5000 }] }))), false);
+    assert.equal(productUnavailable(page(ld({ "@type": "Product", name: "no offers at all" }))), false);
+  });
+
+  it("a zero-price offer next to a real one is ignored, not averaged in", () => {
+    const html = page(ld({ "@type": "Product", offers: [{ price: "0" }, { price: 500 }, { price: 520 }, { price: 540 }] }));
+    const r = priceFromPage(html, { site: "torob", packQty: 1 }, "toman");
+    assert.ok(r.ok && r.raw === 520 && r.offerCount === 3);
+  });
+
+  it("an all-out-of-stock page is unavailable too", () => {
+    const html = page(ld({ "@type": "Product", offers: [{ price: 100, availability: "https://schema.org/OutOfStock" }] }));
+    assert.equal(productUnavailable(html), true);
   });
 });
