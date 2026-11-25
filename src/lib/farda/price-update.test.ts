@@ -8,6 +8,7 @@ import {
   cacheLookup,
   cacheStore,
   cleanOutcome,
+  decodeTextFile,
   emptyCache,
   formatAge,
   markBlocked,
@@ -450,7 +451,7 @@ describe("debug dumps", () => {
 /* ---------- cache ---------- */
 
 describe("price cache", () => {
-  const ref = { url: "https://www.marketban.com/product/mkb-1/x", packQty: 0.946 };
+  const ref = { url: "https://www.marketban.com/product/mkb-1/x", packQty: 0.946, site: "marketban" as const };
   const T0 = new Date("2026-11-20T08:00:00Z");
   const hours = (n: number) => new Date(T0.getTime() + n * 3600 * 1000);
   const outcome = (() => {
@@ -483,7 +484,7 @@ describe("price cache", () => {
   });
 
   it("does not change the cache it was given, and drops entries older than two weeks", () => {
-    const old = cacheStore(emptyCache(), { url: "https://torob.com/p/old", packQty: 1 }, "toman", outcome, T0);
+    const old = cacheStore(emptyCache(), { url: "https://torob.com/p/old", packQty: 1, site: "torob" as const }, "toman", outcome, T0);
     const later = new Date(T0.getTime() + 15 * 24 * 3600 * 1000);
     const next = cacheStore(old, ref, "toman", outcome, later);
     assert.deepEqual(Object.keys(old.entries), ["https://torob.com/p/old"]);
@@ -494,6 +495,7 @@ describe("price cache", () => {
     const cache = cacheStore(emptyCache(), ref, "toman", outcome, T0);
     assert.deepEqual(parseCache(JSON.parse(JSON.stringify(cache))), cache);
     assert.deepEqual(parseCache(null), emptyCache());
+    assert.deepEqual(parseCache({ version: 1, entries: {}, blocked: { at: "2026-11-20T08:00:00Z", status: 429 } }), emptyCache()); // an old-format marker is ignored
     assert.deepEqual(parseCache({ version: 2, entries: {} }), emptyCache());
     const broken = JSON.parse(JSON.stringify(cache));
     broken.entries["https://x.com/bad"] = { fetchedAt: "yesterday", packQty: 1, refUnit: null, globalUnit: "toman", outcome: {} };
@@ -518,28 +520,36 @@ describe("block cooldown", () => {
   const hours = (n: number) => new Date(T0.getTime() + n * 3600 * 1000);
 
   it("is inactive without a block, active for the cooldown, then inactive again", () => {
-    assert.deepEqual(blockCooldown(emptyCache(), T0), { active: false });
-    const blocked = markBlocked(emptyCache(), 429, T0);
-    const during = blockCooldown(blocked, hours(5.9), 6);
+    assert.deepEqual(blockCooldown(emptyCache(), "torob", T0), { active: false });
+    const blocked = markBlocked(emptyCache(), "torob", 429, T0);
+    const during = blockCooldown(blocked, "torob", hours(5.9), 6);
     assert.ok(during.active);
     if (during.active) {
       assert.equal(during.status, 429);
       assert.equal(during.until, hours(6).toISOString());
     }
-    assert.deepEqual(blockCooldown(blocked, hours(6), 6), { active: false });
+    assert.deepEqual(blockCooldown(blocked, "torob", hours(6), 6), { active: false });
   });
 
-  it("a later successful reading clears the block marker", () => {
-    const ref = { url: "https://torob.com/p/x", packQty: 1 };
+  it("a block on one site does not stop requests to the other", () => {
+    const blocked = markBlocked(emptyCache(), "marketban", 429, T0);
+    assert.equal(blockCooldown(blocked, "marketban", hours(1)).active, true);
+    assert.equal(blockCooldown(blocked, "torob", hours(1)).active, false);
+  });
+
+  it("a successful reading clears only that site's block marker", () => {
     const ok = priceFromPage(page(ld({ "@type": "Product", offers: { price: 5, priceCurrency: "IRT" } })), { site: "torob", packQty: 1 }, "toman");
     assert.ok(ok.ok);
-    const cache = cacheStore(markBlocked(emptyCache(), 403, T0), ref, "toman", ok as Extract<typeof ok, { ok: true }>, hours(7));
-    assert.equal(cache.blocked, null);
+    const both = markBlocked(markBlocked(emptyCache(), "torob", 403, T0), "marketban", 429, T0);
+    const ref = { url: "https://torob.com/p/x", packQty: 1, site: "torob" as const };
+    const cache = cacheStore(both, ref, "toman", ok as Extract<typeof ok, { ok: true }>, hours(7));
+    assert.equal(cache.blocked.torob, undefined);
+    assert.equal(cache.blocked.marketban?.status, 429);
   });
 
   it("survives a round-trip through parseCache", () => {
-    const blocked = markBlocked(emptyCache(), 429, T0);
-    assert.deepEqual(parseCache(JSON.parse(JSON.stringify(blocked))).blocked, { at: T0.toISOString(), status: 429 });
+    const blocked = markBlocked(emptyCache(), "torob", 429, T0);
+    assert.deepEqual(parseCache(JSON.parse(JSON.stringify(blocked))).blocked, { torob: { at: T0.toISOString(), status: 429 } });
   });
 });
 
@@ -551,5 +561,68 @@ describe("formatAge", () => {
     assert.equal(formatAge(3 * 3600_000 + 12 * 60_000), "3 h 12 min");
     assert.equal(formatAge(5 * 24 * 3600_000), "5 days");
     assert.equal(formatAge(-5), "<1 min");
+  });
+});
+
+/* ---------- reviewed edge cases ---------- */
+
+describe("manual CSV: a comma used as a thousands separator", () => {
+  it("is rejected with a clear message instead of becoming the price 151", () => {
+    const r = parseManualCsv("milk,151,889");
+    assert.deepEqual(r.prices, {});
+    assert.equal(r.errors.length, 1);
+    assert.match(r.errors[0], /line 1/);
+    assert.match(r.errors[0], /151889/);
+  });
+
+  it("still accepts a real note column, the Persian separator, and plain numbers", () => {
+    assert.deepEqual(parseManualCsv("milk,151889,from the shop").prices, { milk: 151_889 });
+    assert.deepEqual(parseManualCsv("milk,151٬889").prices, { milk: 151_889 });
+    assert.deepEqual(parseManualCsv("milk;151889").prices, { milk: 151_889 });
+    assert.deepEqual(parseManualCsv("milk,151889,2026").prices, { milk: 151_889 }); // a 4-digit note is not a thousands group
+  });
+});
+
+describe("decodeTextFile", () => {
+  const utf16le = (text: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+  it("reads UTF-8, UTF-8 with BOM, and UTF-16 (what PowerShell writes)", () => {
+    assert.equal(decodeTextFile(Buffer.from("milk,151889")), "milk,151889");
+    assert.equal(decodeTextFile(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("milk,151889")])), "milk,151889");
+    assert.equal(decodeTextFile(utf16le("milk,151889\r\n")), "milk,151889\r\n");
+    const be = Buffer.from(utf16le("ab")).swap16(); // BOM becomes FE FF
+    assert.equal(decodeTextFile(be), "ab");
+  });
+
+  it("makes a UTF-16 CSV parse normally", () => {
+    assert.deepEqual(parseManualCsv(decodeTextFile(utf16le("id,price\r\nmilk,151889\r\ntea,775000\r\n"))).prices, {
+      milk: 151_889,
+      tea: 775_000,
+    });
+  });
+});
+
+describe("out-of-stock offers", () => {
+  const offers = (list: unknown[]) => page(ld({ "@type": "Product", offers: list }));
+  it("are skipped, so the cheapest price is a price you can buy at", () => {
+    const r = priceFromPage(
+      offers([{ price: 100, availability: "https://schema.org/OutOfStock" }, { price: 300, availability: "https://schema.org/InStock" }, { price: 400 }]),
+      { site: "marketban", packQty: 1 },
+      "toman",
+    );
+    assert.ok(r.ok && r.raw === 300 && r.offerCount === 2);
+  });
+
+  it("do not drag the Torob median down", () => {
+    const r = priceFromPage(
+      offers([{ price: 100, availability: "OutOfStock" }, { price: 500 }, { price: 520 }, { price: 540 }]),
+      { site: "torob", packQty: 1 },
+      "toman",
+    );
+    assert.ok(r.ok && r.raw === 520);
+  });
+
+  it("a page where every offer is out of stock gives no JSON-LD price (the item keeps its old price)", () => {
+    const html = offers([{ price: 100, availability: "https://schema.org/OutOfStock" }, { price: 110, availability: "SoldOut" }]);
+    assert.equal(extractPagePrice(html).ok, false);
   });
 });

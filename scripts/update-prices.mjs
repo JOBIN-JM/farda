@@ -32,6 +32,7 @@ import {
   blockCooldown,
   cacheLookup,
   cacheStore,
+  decodeTextFile,
   digikalaProductId,
   dumpFileName,
   emptyCache,
@@ -46,6 +47,7 @@ import {
   priceFromDigikala,
   priceFromPage,
   refLabel,
+  siteFromUrl,
   truncateForDump,
 } from "../src/lib/farda/price-update.ts";
 
@@ -77,9 +79,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const delayMs = () => (process.env.FARDA_DELAY_MS ? Number(process.env.FARDA_DELAY_MS) : 3000 + Math.random() * 3000);
 
 class BlockedError extends Error {
-  constructor(message, status) {
+  constructor(message, status, site) {
     super(message);
     this.status = status;
+    this.site = site;
   }
 }
 
@@ -89,13 +92,13 @@ function git(...gitArgs) {
 
 /** Read a JSON file; a broken file stops the run with a clear message instead of a stack trace. */
 function readJson(path, name) {
-  const { value, error } = parseJsonText(readFileSync(path, "utf8"));
+  const { value, error } = parseJsonText(decodeTextFile(readFileSync(path)));
   if (error) fail(1, `${name} is not valid JSON (nothing was changed): ${error}`);
   return value;
 }
 
 const UNIT_LABEL = { rial: "rial", toman: "toman" };
-const UNIT_SOURCE_FA = {
+const UNIT_SOURCE_LABEL = {
   "page-currency": (code) => `unit from the page: ${code}`,
   "ref-unit": () => "unit from this link",
   "global-unit": () => "unit from the file-wide setting",
@@ -116,6 +119,22 @@ function dumpResponse(itemId, index, ref, contentType, body) {
   }
 }
 
+/**
+ * fetch() follows redirects without telling us. A link that now lands on another site, or on a home page, is not the
+ * product any more, and whatever the page shows must not be read as its price.
+ */
+function redirectProblem(ref, requestedUrl, finalUrl) {
+  if (!finalUrl) return null;
+  try {
+    const final = new URL(finalUrl);
+    if (siteFromUrl(finalUrl) !== ref.site) return `redirected to another site (${final.hostname})`;
+    if (final.pathname === "/" && new URL(requestedUrl).pathname !== "/") return "redirected to the home page (product removed?)";
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /** One GET, no retry. Digikala: its product API (JSON). Marketban / Torob: the product page itself (HTML). */
 async function fetchRef(itemId, index, ref) {
   const controller = new AbortController();
@@ -133,9 +152,11 @@ async function fetchRef(itemId, index, ref) {
     dumpResponse(itemId, index, ref, contentType, body);
     // The site is telling us to stop. Stop everything; do not retry and do not publish a half run.
     if (response.status === 403 || response.status === 429) {
-      throw new BlockedError(`the site answered ${response.status} (rate limited / blocked)`, response.status);
+      throw new BlockedError(`${ref.site} answered ${response.status} (rate limited / blocked)`, response.status, ref.site);
     }
     if (!response.ok) return { error: `HTTP ${response.status}` };
+    const moved = redirectProblem(ref, url, response.url);
+    if (moved) return { error: moved };
     return { body };
   } catch (error) {
     if (error instanceof BlockedError) throw error;
@@ -148,7 +169,7 @@ async function fetchRef(itemId, index, ref) {
 /** A readable line with BOTH the raw number and the converted one, so the unit is never a silent guess. */
 function describeOutcome(itemId, ref, outcome, extra = null) {
   const fixed = (n) => (Number.isInteger(n) ? fmt(n) : fmt(Math.round(n * 100) / 100));
-  const unitNote = UNIT_SOURCE_FA[outcome.unitSource](outcome.currencyCode);
+  const unitNote = UNIT_SOURCE_LABEL[outcome.unitSource](outcome.currencyCode);
   const parts = [
     `${itemId}: ${refLabel(ref)} → raw ${fmt(outcome.raw)} ${UNIT_LABEL[outcome.unit]} (${unitNote}; ${METHOD_LABEL[outcome.method]})`,
     `= ${fixed(outcome.toman)} toman ÷ ${ref.packQty} = ${fmt(outcome.perUnit)} toman/unit`,
@@ -187,6 +208,7 @@ async function collect(sources, startCache) {
   let cache = startCache;
   const collected = {};
   const failed = []; // items that have links but no price this run: they keep their old price
+  const partial = []; // items priced from fewer links than configured: the median rests on less data
   let requested = false; // pauses only go between real requests, not before a cache hit
   for (const [itemId, refs] of Object.entries(sources.items)) {
     const values = [];
@@ -198,11 +220,12 @@ async function collect(sources, startCache) {
         values.push(hit.outcome.perUnit);
         continue;
       }
-      const cooldown = ignoreCooldown ? { active: false } : blockCooldown(cache, new Date(), COOLDOWN_HOURS);
+      const cooldown = ignoreCooldown ? { active: false } : blockCooldown(cache, ref.site, new Date(), COOLDOWN_HOURS);
       if (cooldown.active) {
         throw new BlockedError(
-          `A previous run was blocked (HTTP ${cooldown.status}) at ${when(cooldown.at)}, so no requests are sent until ${when(cooldown.until)} (--ignore-cooldown overrides this)`,
+          `A previous run was blocked by ${ref.site} (HTTP ${cooldown.status}) at ${when(cooldown.at)}, so no requests are sent to it until ${when(cooldown.until)} (--ignore-cooldown overrides this)`,
           cooldown.status,
+          ref.site,
         );
       }
       if (requested) await sleep(delayMs());
@@ -211,7 +234,7 @@ async function collect(sources, startCache) {
       try {
         fetched = await fetchRef(itemId, index, ref);
       } catch (error) {
-        if (error instanceof BlockedError) saveCache((cache = markBlocked(cache, error.status ?? 429, new Date())));
+        if (error instanceof BlockedError) saveCache((cache = markBlocked(cache, error.site ?? ref.site, error.status ?? 429, new Date())));
         throw error;
       }
       const { body, error } = fetched;
@@ -237,10 +260,12 @@ async function collect(sources, startCache) {
       values.push(outcome.perUnit);
     }
     const price = median(values);
-    if (price !== null) collected[itemId] = price;
-    else failed.push(itemId);
+    if (price !== null) {
+      collected[itemId] = price;
+      if (values.length < refs.length) partial.push(`${itemId} (${values.length} of ${refs.length})`);
+    } else failed.push(itemId);
   }
-  return { collected, failed };
+  return { collected, failed, partial };
 }
 
 function fail(code, message) {
@@ -250,7 +275,7 @@ function fail(code, message) {
 
 async function main() {
   // Inputs
-  const manualFile = existsSync(MANUAL_PATH) ? parseManualCsv(readFileSync(MANUAL_PATH, "utf8")) : { prices: {}, errors: [] };
+  const manualFile = existsSync(MANUAL_PATH) ? parseManualCsv(decodeTextFile(readFileSync(MANUAL_PATH))) : { prices: {}, errors: [] };
   let sources = { unit: "rial", items: {} };
   let sourceErrors = [];
   if (!offline && existsSync(SOURCES_PATH)) {
@@ -276,6 +301,7 @@ async function main() {
   // Collect
   let collected = {};
   let failed = [];
+  let partial = [];
   const refCount = Object.values(sources.items).reduce((n, refs) => n + refs.length, 0);
   if (!offline && refCount > 0) {
     const cache = loadCache();
@@ -288,7 +314,7 @@ async function main() {
       `Prices for ${refCount} product links: ${cached} from the cache (under ${CACHE_HOURS} h old), ${refCount - cached} to fetch (with pauses between requests)…`,
     );
     try {
-      ({ collected, failed } = await collect(sources, cache));
+      ({ collected, failed, partial } = await collect(sources, cache));
     } catch (error) {
       if (error instanceof BlockedError) {
         fail(
@@ -304,6 +330,9 @@ async function main() {
 
   if (failed.length > 0) {
     console.log(`\n⚠ No price was fetched for these items; they keep their previous price (check the links): ${failed.join(", ")}`);
+  }
+  if (partial.length > 0) {
+    console.log(`\n⚠ Priced from fewer links than configured (see the ✗ lines above): ${partial.join(", ")}`);
   }
 
   // Plan

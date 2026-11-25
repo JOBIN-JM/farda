@@ -18,6 +18,16 @@ export function parseJsonText(text: string): { value: unknown; error: null } | {
   }
 }
 
+/**
+ * File bytes → text. Handles UTF-8 (with or without BOM) and the UTF-16 files that Windows PowerShell's `>` and `echo`
+ * write; read as UTF-8 those turn into NUL-filled garbage and nonsense error messages.
+ */
+export function decodeTextFile(bytes: Uint8Array): string {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  return new TextDecoder("utf-8").decode(bytes); // also drops a UTF-8 BOM
+}
+
 export function median(values: number[]): number | null {
   const sorted = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
   if (sorted.length === 0) return null;
@@ -46,11 +56,17 @@ export function parseManualCsv(text: string): { prices: PriceMap; errors: string
     const row = line.trim();
     if (!row || row.startsWith("#")) return;
     // Excel in some regional settings writes ";" (or tabs) and quotes; accept all of them.
-    const [rawId, rawPrice] = row.split(/[,;\t]/).map((part) => part.trim().replace(/^"(.*)"$/, "$1").trim());
+    const parts = row.split(/[,;\t]/).map((part) => part.trim().replace(/^"(.*)"$/, "$1").trim());
+    const [rawId, rawPrice] = parts;
     if (rawId.toLowerCase() === "id") return; // header row, even below comment lines
     const where = `prices-manual.csv, line ${index + 1}`;
     if (!KNOWN_IDS.has(rawId)) {
       errors.push(`${where}: unknown id "${rawId}"`);
+      return;
+    }
+    // "milk,151,889" would otherwise be read as the price 151 plus a note "889".
+    if (parts.length >= 3 && /^\d{1,3}$/.test(rawPrice ?? "") && /^\d{3}$/.test(parts[2])) {
+      errors.push(`${where}: "${rawPrice},${parts[2]}" looks like a price with a comma as thousands separator, but a comma separates columns; write ${rawPrice}${parts[2]} or ${rawPrice}٬${parts[2]}`);
       return;
     }
     const price = Number(normalizeDigits(rawPrice ?? ""));
@@ -235,7 +251,12 @@ function* ldNodes(value: unknown): Generator<Record<string, unknown>> {
   }
 }
 
-/** Offer prices (and the first currency) of an `offers` value: an Offer, an array of them, or an AggregateOffer. */
+const OUT_OF_STOCK = /(OutOfStock|SoldOut|Discontinued)$/i;
+
+/**
+ * Offer prices (and the first currency) of an `offers` value: an Offer, an array of them, or an AggregateOffer.
+ * An offer that says it is out of stock is skipped: its price is old, and it is often the cheapest one.
+ */
 function collectOffers(offers: unknown, acc: { prices: number[]; currency: string | null }): void {
   if (Array.isArray(offers)) {
     for (const o of offers) collectOffers(o, acc);
@@ -247,6 +268,8 @@ function collectOffers(offers: unknown, acc: { prices: number[]; currency: strin
     collectOffers(offers.offers, acc); // an AggregateOffer that lists its offers: use those, not lowPrice
     return;
   }
+  const availability = asString(offers.availability);
+  if (availability && OUT_OF_STOCK.test(availability)) return;
   const price = parseAmount(offers.price) ?? parseAmount(offers.lowPrice);
   if (price !== null) acc.prices.push(price);
 }
@@ -500,15 +523,15 @@ export type PriceCache = {
   version: 1;
   /** Keyed by the link's URL. Only successful readings are cached, never failures. */
   entries: Record<string, CacheEntry>;
-  /** The last time a site told us to stop (403/429). Later runs stay away from the network for a while. */
-  blocked: { at: string; status: number } | null;
+  /** The last time each site told us to stop (403/429). Later runs stay away from that site for a while. */
+  blocked: Partial<Record<SourceSite, { at: string; status: number }>>;
 };
 
 export const DEFAULT_CACHE_HOURS = 12;
 export const DEFAULT_COOLDOWN_HOURS = 6;
 const CACHE_KEEP_MS = 14 * 24 * 3600 * 1000;
 
-export const emptyCache = (): PriceCache => ({ version: 1, entries: {}, blocked: null });
+export const emptyCache = (): PriceCache => ({ version: 1, entries: {}, blocked: {} });
 
 const isIso = (v: unknown): v is string => typeof v === "string" && !Number.isNaN(Date.parse(v));
 const isUnit = (v: unknown): v is SourceUnit => v === "rial" || v === "toman";
@@ -564,9 +587,13 @@ export function parseCache(value: unknown): PriceCache {
       };
     }
   }
-  const blocked = value.blocked;
-  if (isObject(blocked) && isIso(blocked.at) && typeof blocked.status === "number") {
-    cache.blocked = { at: blocked.at, status: blocked.status };
+  if (isObject(value.blocked)) {
+    for (const site of Object.keys(SITE_HOSTS) as SourceSite[]) {
+      const mark = value.blocked[site];
+      if (isObject(mark) && isIso(mark.at) && typeof mark.status === "number") {
+        cache.blocked[site] = { at: mark.at, status: mark.status };
+      }
+    }
   }
   return cache;
 }
@@ -587,10 +614,10 @@ export function cacheLookup(
   return { outcome: entry.outcome, fetchedAt: entry.fetchedAt, ageMs };
 }
 
-/** A new cache with this reading added (and entries older than two weeks dropped). A success also clears the block marker. */
+/** A new cache with this reading added (and entries older than two weeks dropped). A success also clears that site's block marker. */
 export function cacheStore(
   cache: PriceCache,
-  ref: Pick<SourceRef, "url" | "packQty" | "unit">,
+  ref: Pick<SourceRef, "url" | "packQty" | "unit" | "site">,
   globalUnit: SourceUnit,
   outcome: OkOutcome,
   now: Date,
@@ -600,23 +627,27 @@ export function cacheStore(
     if (now.getTime() - Date.parse(entry.fetchedAt) <= CACHE_KEEP_MS) entries[url] = entry;
   }
   entries[ref.url] = { fetchedAt: now.toISOString(), packQty: ref.packQty, refUnit: ref.unit ?? null, globalUnit, outcome };
-  return { version: 1, entries, blocked: null };
+  const blocked = { ...cache.blocked };
+  delete blocked[ref.site];
+  return { version: 1, entries, blocked };
 }
 
-export function markBlocked(cache: PriceCache, status: number, now: Date): PriceCache {
-  return { ...cache, blocked: { at: now.toISOString(), status } };
+export function markBlocked(cache: PriceCache, site: SourceSite, status: number, now: Date): PriceCache {
+  return { ...cache, blocked: { ...cache.blocked, [site]: { at: now.toISOString(), status } } };
 }
 
-/** Whether a recent 403/429 means we should still keep off the network, and until when. */
+/** Whether a recent 403/429 from this site means we should still keep off it, and until when. */
 export function blockCooldown(
   cache: PriceCache,
+  site: SourceSite,
   now: Date,
   hours = DEFAULT_COOLDOWN_HOURS,
 ): { active: false } | { active: true; at: string; until: string; status: number } {
-  if (!cache.blocked) return { active: false };
-  const until = Date.parse(cache.blocked.at) + hours * 3600 * 1000;
+  const mark = cache.blocked[site];
+  if (!mark) return { active: false };
+  const until = Date.parse(mark.at) + hours * 3600 * 1000;
   if (!(now.getTime() < until)) return { active: false };
-  return { active: true, at: cache.blocked.at, until: new Date(until).toISOString(), status: cache.blocked.status };
+  return { active: true, at: mark.at, until: new Date(until).toISOString(), status: mark.status };
 }
 
 /** "<1 min", "25 min", "3 h 12 min", "5 days". */
