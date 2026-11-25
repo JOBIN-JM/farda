@@ -17,6 +17,7 @@ import {
   extractPagePrice,
   priceFromDigikala,
   priceFromPage,
+  torobPageSummary,
   productUnavailable,
   refLabel,
   siteFromUrl,
@@ -680,5 +681,50 @@ describe("a product nobody sells right now (shape copied from the real Torob pag
   it("an all-out-of-stock page is unavailable too", () => {
     const html = page(ld({ "@type": "Product", offers: [{ price: 100, availability: "https://schema.org/OutOfStock" }] }));
     assert.equal(productUnavailable(html), true);
+  });
+});
+
+describe("torobPageSummary (shape copied from the real Torob page for the Laden 900 ml oil)", () => {
+  const nextData = {
+    props: {
+      pageProps: {
+        baseProduct: {
+          name1: "روغن آفتابگردان لادن حجم ۹۰۰ میلی لیتر",
+          products_info: {
+            result: [
+              { shop_name: "الف", price_text: "ناموجود", name1: "روغن مایع آفتابگردان لادن حجم 900 میلی لیتری (کارتن 12 عددی)" },
+              { shop_name: "ب", price_text: "۱٬۲۰۰٬۰۰۰ تومان", name1: "روغن مایع آفتابگردان لادن (کارتن 12 عددی)" },
+              { shop_name: "ج", price_text: "ناموجود", name1: "x" },
+              { shop_name: "د", price_text: "ناموجود", name1: "y" },
+            ],
+          },
+          structural_specs: {
+            headers: [
+              {
+                header: "مشخصات کلی",
+                specs: { "ویژگی": "مقدار", "حجم هر بطری": "۹۰۰ میلی‌لیتر", "نوع بسته‌بندی": "کارتن ۱۲ عددی", "خالی": "  " },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const html = `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nextData)}</script></html>`;
+
+  it("shows the carton: seller item names and the pack-type spec", () => {
+    const r = torobPageSummary(html);
+    assert.ok(r);
+    assert.equal(r.title, "روغن آفتابگردان لادن حجم ۹۰۰ میلی لیتر");
+    assert.equal(r.sellers.length, 3); // capped
+    assert.match(r.sellers[0].item ?? "", /کارتن 12 عددی/);
+    assert.equal(r.sellers[1].price, "۱٬۲۰۰٬۰۰۰ تومان");
+    assert.deepEqual(r.specs, [["حجم هر بطری", "۹۰۰ میلی‌لیتر"], ["نوع بسته‌بندی", "کارتن ۱۲ عددی"]]); // header row and blanks dropped
+  });
+
+  it("is null for pages without that data, and for broken JSON", () => {
+    assert.equal(torobPageSummary("<html><body>nothing</body></html>"), null);
+    assert.equal(torobPageSummary('<script id="__NEXT_DATA__">{broken</script>'), null);
+    assert.equal(torobPageSummary('<script id="__NEXT_DATA__">{"props":{"pageProps":{}}}</script>'), null);
   });
 });

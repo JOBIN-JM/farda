@@ -711,6 +711,47 @@ export function formatAge(ms: number): string {
   return `${Math.floor(hours / 24)} days`;
 }
 
+/* ---------- what a Torob page is actually selling ---------- */
+
+export type TorobSummary = {
+  title: string | null;
+  /** The first few sellers: the price text the page shows and the item name the seller lists (this is where "کارتن ۱۲ عددی" shows up). */
+  sellers: { price: string | null; item: string | null }[];
+  /** The product's spec table as [name, value] pairs (pack type, volume, weight...). */
+  specs: [string, string][];
+};
+
+/**
+ * A short description of what a Torob product page prices, read from its embedded JSON (shape taken from a real page).
+ * A Torob "product" can be a carton of 12, and then every price on it is for the whole carton: set packQty to 12.
+ * Null when the page has no such data.
+ */
+export function torobPageSummary(html: string, maxSellers = 3, maxSpecs = 20): TorobSummary | null {
+  const match = /<script\b[^>]*\bid\s*=\s*["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
+  if (!match) return null;
+  const { value } = parseJsonText(match[1].trim());
+  const props = isObject(value) && isObject(value.props) ? value.props : null;
+  const pageProps = props && isObject(props.pageProps) ? props.pageProps : null;
+  const base = pageProps && isObject(pageProps.baseProduct) ? pageProps.baseProduct : null;
+  if (!base) return null;
+  const info = isObject(base.products_info) ? base.products_info : null;
+  const result = info && Array.isArray(info.result) ? info.result : [];
+  const sellers = result.filter(isObject).slice(0, maxSellers).map((r) => ({
+    price: asString(r.price_text),
+    item: asString(r.name1),
+  }));
+  const specs: [string, string][] = [];
+  const specSet = isObject(base.structural_specs) ? base.structural_specs : null;
+  const headers = specSet && Array.isArray(specSet.headers) ? specSet.headers : [];
+  for (const header of headers) {
+    if (!isObject(header) || !isObject(header.specs)) continue;
+    for (const [name, v] of Object.entries(header.specs)) {
+      if (typeof v === "string" && v.trim() && v.trim() !== "مقدار") specs.push([name, v.trim()]);
+    }
+  }
+  return { title: asString(base.name1), sellers, specs: specs.slice(0, maxSpecs) };
+}
+
 /* ---------- debug dumps ---------- */
 
 export const DEBUG_DUMP_MAX_BYTES = 200 * 1024;

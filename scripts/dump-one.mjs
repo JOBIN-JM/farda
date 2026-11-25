@@ -9,7 +9,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dumpFileName, extractPagePrice, parseJsonText, truncateForDump } from "../src/lib/farda/price-update.ts";
+import { dumpFileName, extractPagePrice, parseJsonText, torobPageSummary, truncateForDump } from "../src/lib/farda/price-update.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const USER_AGENT = process.env.FARDA_UA ?? "Mozilla/5.0 (compatible; farda-price-check/1.0; personal use)";
@@ -54,6 +54,13 @@ try {
   console.log(`JSON-LD: ${has(/application\/ld\+json/i)} · __NEXT_DATA__: ${has(/__NEXT_DATA__/)} · product:price meta: ${has(/product:price|og:price/i)} · "price" anywhere: ${has(/price/i)}`);
   const result = extractPagePrice(body);
   console.log(result.ok ? `extractor: found ${result.reading.raw} (${result.reading.method}, currency ${result.reading.currency ?? "none"})` : "extractor: no price found");
+  const torob = torobPageSummary(body);
+  if (torob) {
+    console.log(`Torob page: ${torob.title ?? "(no title)"}`);
+    for (const seller of torob.sellers) console.log(`  seller: ${seller.price ?? "?"} | ${seller.item ?? "?"}`);
+    if (torob.specs.length > 0) console.log(`  specs: ${torob.specs.map(([k, v]) => `${k}: ${v}`).join(" ; ")}`);
+    console.log("  Check the pack type above: if the price is for a carton of 12, set packQty to 12 in data/price-sources.json.");
+  }
   if (response.status === 403 || response.status === 429) console.log("The site is blocking requests right now; wait a few hours before trying again.");
 } catch (error) {
   console.error(`request failed: ${error?.name === "AbortError" ? "timeout" : error?.message ?? error}`);
